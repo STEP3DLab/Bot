@@ -1,122 +1,108 @@
-# step3d_status_bot.py
-
 import logging
-import json
 import os
-from dotenv import load_dotenv
+from aiogram import Bot, Dispatcher, executor, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+import openai
 
-# --- LOAD ENV ---
-load_dotenv()
-API_TOKEN = os.getenv('API_TOKEN')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+API_TOKEN = os.getenv("API_TOKEN", "your-telegram-token")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your-openai-key")
+openai.api_key = OPENAI_API_KEY
 
-# --- MOCK DEPENDENCY (OpenAI not available in some environments) ---
-class MockOpenAI:
-    @staticmethod
-    def ChatCompletion():
-        class Dummy:
-            @staticmethod
-            def create(*args, **kwargs):
-                return {
-                    "choices": [
-                        {"message": {"content": "(Тестовый ответ ChatGPT — библиотека OpenAI недоступна в среде исполнения)"}}
-                    ]
-                }
-        return Dummy
-
-try:
-    import openai
-    openai.api_key = OPENAI_API_KEY
-except ImportError:
-    print("⚠️ OpenAI не установлен. Используется заглушка (mock) для тестирования.")
-    openai = MockOpenAI()
-
-try:
-    from aiogram import Bot, Dispatcher, types, executor
-    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-except ImportError:
-    print("❌ Не установлен 'aiogram'. Установите его с помощью: pip install aiogram")
-    exit(0)
-
-# --- SETUP ---
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
-# --- MOCK DATA ---
 orders_db = {
     "3121": {
         "client": "Иванов И.И.",
         "service": "3D-печать (PLA)",
         "status": "Завершён",
         "date": "2025-04-15",
+        "deadline": "2025-04-20",
         "feedback": "Очень качественно и быстро!"
     },
     "3122": {
         "client": "Петров С.С.",
         "service": "3D-сканирование",
         "status": "В работе",
-        "date": "2025-04-20",
+        "date": "2025-04-19",
+        "deadline": "2025-04-25",
         "feedback": ""
     }
 }
 
-# --- HANDLERS ---
+main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
+main_kb.add("/статус", "/отзыв").add("/написать_отзыв", "🧠 Помощь")
+
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
-    await message.reply("👋 Привет! Я STEP_3D_Bot. Отправьте /статус <id> или /отзыв <id>, чтобы получить информацию по заказу.")
+    await message.reply("👋 Привет! Я бот STEP_3D. Выберите команду:", reply_markup=main_kb)
 
 @dp.message_handler(commands=['статус'])
 async def get_status(message: types.Message):
-    try:
-        _, order_id = message.text.strip().split()
-        order = orders_db.get(order_id)
-        if order:
-            await message.reply(f"🛠 Заказ №{order_id}\nУслуга: {order['service']}\nСтатус: {order['status']}\nДата: {order['date']}")
-        else:
-            await message.reply("❗ Заказ не найден.")
-    except:
-        await message.reply("❗ Пожалуйста, введите команду в формате: /статус <id>")
+    await message.reply("Введите ID заказа, например: 3121")
 
 @dp.message_handler(commands=['отзыв'])
-async def get_feedback(message: types.Message):
-    try:
-        _, order_id = message.text.strip().split()
-        order = orders_db.get(order_id)
-        if order and order['feedback']:
-            await message.reply(f"🗣 Отзыв клиента:\n\"{order['feedback']}\"")
-        else:
-            await message.reply("❗ Отзыв не найден или ещё не оставлен.")
-    except:
-        await message.reply("❗ Пожалуйста, введите команду в формате: /отзыв <id>")
+async def get_feedback_command(message: types.Message):
+    await message.reply("Введите ID заказа для отзыва, например: /отзыв 3121")
 
 @dp.message_handler(commands=['написать_отзыв'])
-async def leave_feedback(message: types.Message):
-    await message.reply("✍ Пожалуйста, введите отзыв в формате:\n3121: Всё понравилось!")
+async def write_feedback(message: types.Message):
+    await message.reply("✍ Введите в формате: 3121: Очень понравилось!")
 
-@dp.message_handler(lambda message: ':' in message.text and message.text.split(':')[0].strip().isdigit())
+@dp.message_handler(lambda m: ':' in m.text and m.text.split(':')[0].strip().isdigit())
 async def save_feedback(message: types.Message):
     order_id, feedback = message.text.split(':', 1)
     if order_id in orders_db:
-        orders_db[order_id]['feedback'] = feedback.strip()
+        orders_db[order_id]["feedback"] = feedback.strip()
         await message.reply("✅ Спасибо! Отзыв сохранён.")
     else:
         await message.reply("❗ Неверный ID заказа.")
 
-@dp.message_handler()
-async def chatgpt_response(message: types.Message):
+@dp.message_handler(lambda m: m.text.startswith("/отзыв"))
+async def get_feedback(message: types.Message):
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Ты бот-помощник сервиса STEP_3D, помогающий по вопросам 3D-услуг."},
-                {"role": "user", "content": message.text}
-            ]
-        )
-        await message.reply(response['choices'][0]['message']['content'])
-    except Exception as e:
-        await message.reply("⚠️ Ошибка при обращении к ChatGPT.")
+        _, order_id = message.text.strip().split()
+        order = orders_db.get(order_id)
+        if order and order["feedback"]:
+            await message.reply(f'🗣 Отзыв клиента: "{order["feedback"]}"')
+        else:
+            await message.reply("❗ Отзыв не найден.")
+    except:
+        await message.reply("❗ Используй: /отзыв <id>")
 
-# --- START BOT ---
+@dp.message_handler(lambda m: m.text.isdigit() and m.text in orders_db)
+async def send_status_by_id(message: types.Message):
+    order_id = message.text
+    order = orders_db[order_id]
+    await message.reply(
+        f"📦 Заказ №{order_id}
+"
+        f"Клиент: {order['client']}
+"
+        f"Услуга: {order['service']}
+"
+        f"Статус: {order['status']}
+"
+        f"Дата: {order['date']}
+"
+        f"📅 Срок: до {order['deadline']}"
+    )
+
+@dp.message_handler(content_types=['document'])
+async def handle_document(message: types.Message):
+    await message.reply("📥 Файл получен. Спасибо! Обработка начнётся скоро.")
+
+@dp.message_handler(lambda m: m.text == "🧠 Помощь")
+async def gpt_help(message: types.Message):
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": "Ты бот STEP_3D, консультируешь по 3D-услугам."},
+            {"role": "user", "content": message.text}
+        ]
+    )
+    await message.reply(response['choices'][0]['message']['content'])
+
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
