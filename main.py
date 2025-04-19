@@ -1,76 +1,114 @@
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-from aiogram.utils import executor
-from aiogram.dispatcher import FSMContext
+import os
+import logging
+from datetime import datetime
+from aiogram import Bot, Dispatcher, executor, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-import openai
+from dotenv import load_dotenv
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
-import os
 
-# Настройки
+load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+GSHEET_KEY = os.getenv("GOOGLE_SHEET_KEY")
 
-openai.api_key = OPENAI_API_KEY
+MANAGERS = [123456789]  # Telegram ID менеджеров
+
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
-# Google Sheets
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("google-credentials.json", scope)
-client = gspread.authorize(creds)
-sheet = client.open_by_key(GOOGLE_SHEET_ID).worksheet("GPT_История")
+# Настройка Google Sheets
+scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+creds = ServiceAccountCredentials.from_json_keyfile_name('google-credentials.json', scope)
+gc = gspread.authorize(creds)
+sheet = gc.open_by_key(GSHEET_KEY).worksheet("Заказы_бота")
 
-# FSM
-class QueryState(StatesGroup):
-    waiting_for_query = State()
+# FSM форма
+class Form(StatesGroup):
+    name = State()
+    service = State()
+    comment = State()
 
-# Клавиатура
-start_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-start_kb.add("🧠 Консультация GPT-4", "📦 Оставить заявку")
-start_kb.add("📜 История заказов", "🔙 Назад")
+main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
+main_kb.add("📦 Оставить заявку", "📜 История заказов", "🧠 Консультация")
 
-@dp.message_handler(commands=["start"])
-async def start_cmd(message: types.Message):
-    await message.answer("Добро пожаловать в STEP_3D! Выберите действие:", reply_markup=start_kb)
+@dp.message_handler(commands='start')
+async def start(message: types.Message):
+    await message.answer("Добро пожаловать в STEP_3D!", reply_markup=main_kb)
 
-@dp.message_handler(lambda message: message.text == "🔙 Назад")
-async def go_back(message: types.Message):
-    await message.answer("Вы вернулись в главное меню. Выберите действие:", reply_markup=start_kb)
+@dp.message_handler(lambda m: m.text == "📦 Оставить заявку")
+async def fsm_start(message: types.Message):
+    await Form.name.set()
+    await message.answer("Введите ваше имя:")
 
-@dp.message_handler(lambda message: message.text == "🧠 Консультация GPT-4")
-async def gpt_consult(message: types.Message):
-    await message.answer("Напишите ваш вопрос, и я передам его GPT-4:")
-    await QueryState.waiting_for_query.set()
+@dp.message_handler(state=Form.name)
+async def fsm_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await Form.next()
+    await message.answer("Какую услугу вы хотите заказать?")
 
-@dp.message_handler(state=QueryState.waiting_for_query)
-async def process_gpt_query(message: types.Message, state: FSMContext):
-    user_query = message.text
-    try:
-        completion = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "Ты — ассистент STEP_3D, помогаешь пользователям по вопросам 3D-печати, 3D-сканирования и AR/VR."},
-                {"role": "user", "content": user_query}
-            ]
-        )
-        gpt_reply = completion.choices[0].message.content
-        await message.answer(gpt_reply)
+@dp.message_handler(state=Form.service)
+async def fsm_service(message: types.Message, state: FSMContext):
+    await state.update_data(service=message.text)
+    await Form.next()
+    await message.answer("Добавьте комментарий:")
 
-        # лог в Google Таблицу
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        sheet.append_row([
-            str(message.from_user.id),
-            message.from_user.full_name,
-            user_query,
-            gpt_reply,
-            timestamp
-        ])
-    except Exception as e:
-        await message.answer("⚠️ Ошибка при обращении к GPT.")
-        print(f"Ошибка GPT: {e}")
+@dp.message_handler(state=Form.comment)
+async def fsm_comment(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    order_id = len(sheet.get_all_values())
+    sheet.append_row([order_id, message.from_user.id, data['name'], data['service'], data['comment'], "новый", now])
+    await message.answer(f"✅ Заказ №{order_id} сохранён", reply_markup=main_kb)
     await state.finish()
+
+@dp.message_handler(lambda m: m.text == "📜 История заказов")
+async def show_history(message: types.Message):
+    records = sheet.get_all_records()
+    user_id = message.from_user.id
+    text = "📋 Ваши заказы:
+"
+    found = False
+    for row in records:
+        if row['user_id'] == user_id or user_id in MANAGERS:
+            found = True
+            text_block = (
+                f"
+📦 Заказ №{row['№']}
+"
+                f"Услуга: {row['service']}
+"
+                f"Комментарий: {row['comment']}
+"
+                f"Статус: {row['статус']}
+"
+                f"Дата: {row['дата']}"
+            )
+            kb = InlineKeyboardMarkup()
+            kb.add(
+                InlineKeyboardButton("✅ Завершить", callback_data=f"done:{row['№']}"),
+                InlineKeyboardButton("🗑 Удалить", callback_data=f"del:{row['№']}")
+            )
+            await message.answer(text_block, reply_markup=kb)
+    if not found:
+        await message.answer("У вас пока нет заказов.")
+
+@dp.callback_query_handler(lambda c: c.data.startswith("done:") or c.data.startswith("del:"))
+async def process_action(callback_query: types.CallbackQuery):
+    action, order_id = callback_query.data.split(":")
+    records = sheet.get_all_records()
+    row_idx = next((i+2 for i, r in enumerate(records) if str(r['№']) == order_id), None)
+    if row_idx:
+        if action == "done:":
+            sheet.update_cell(row_idx, 6, "завершён")
+            await callback_query.message.edit_text(f"✅ Заказ №{order_id} помечен как завершён")
+        elif action == "del:":
+            sheet.delete_row(row_idx)
+            await callback_query.message.edit_text(f"🗑 Заказ №{order_id} удалён")
+    else:
+        await callback_query.message.answer("⚠️ Заказ не найден.")
+
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True)
