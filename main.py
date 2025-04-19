@@ -11,23 +11,23 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import openai
 
-# Загрузка переменных окружения
+# Загрузка .env
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
 GSHEET_KEY = os.getenv("GOOGLE_SHEET_KEY")
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Настройка логирования
+# Логирование
 logging.basicConfig(level=logging.INFO)
 
-# Менеджеры (Telegram IDs)
+# Менеджеры
 MANAGERS = [123456789]
 
-# Инициализация бота и диспетчера
+# Бот и диспетчер
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
-# Подключение к Google Sheets
+# Google Sheets
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_name('google-credentials.json', scope)
 gc = gspread.authorize(creds)
@@ -44,14 +44,13 @@ class Form(StatesGroup):
 class GPTState(StatesGroup):
     question = State()
 
-# Основное меню
+# Клавиатуры
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add("📦 Оставить заявку", "📜 История заказов", "🧠 Консультация")
-
-# Кнопка «Назад»
 back_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 back_kb.add("◀️ Назад")
 
+# /start
 @dp.message_handler(commands='start')
 async def start(message: types.Message):
     await message.answer("Добро пожаловать в STEP_3D!", reply_markup=main_kb)
@@ -171,14 +170,15 @@ async def gpt_answer(message: types.Message, state: FSMContext):
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "Ты — эксперт по 3D-печати и инженерии. Отвечай кратко и по делу."},
+                {"role": "system", "content": "Ты — эксперт по 3D-печати и инженерии."},
                 {"role": "user", "content": message.text}
             ]
         )
-        reply = response.choices[0].message.content
+        reply = response['choices'][0]['message']['content']
+        # Здесь строка закрыта правильно:
         await message.answer(f"🧠 Ответ GPT:\n{reply}", reply_markup=main_kb)
 
-        # лог в Google Sheets
+        # Логирование
         row_id = len(gpt_log_sheet.get_all_values())
         gpt_log_sheet.append_row([
             row_id,
@@ -189,11 +189,11 @@ async def gpt_answer(message: types.Message, state: FSMContext):
             datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ])
     except Exception as e:
-        logging.error(e)
-        await message.answer("⚠️ Ошибка при запросе GPT.", reply_markup=main_kb)
+        await message.answer("⚠️ Ошибка при получении ответа от GPT.")
+        logging.exception(e)
     finally:
         await state.finish()
 
 if __name__ == "__main__":
-    print("🚀 Бот запущен!")
+    logging.info("🚀 Бот запущен!")
     executor.start_polling(dp, skip_updates=True)
