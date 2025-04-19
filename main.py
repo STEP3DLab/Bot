@@ -11,46 +11,49 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import openai
 
-# Загрузка .env
+# 1) Загрузка переменных окружения
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
 GSHEET_KEY = os.getenv("GOOGLE_SHEET_KEY")
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Логирование
+# Отладочный принт, чтобы убедиться, что бот стартовал
+print("🚀 Бот запущен, токен =", (API_TOKEN or "")[:8] + "…")
+
+# 2) Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Менеджеры
+# 3) Менеджеры (Telegram IDs)
 MANAGERS = [123456789]
 
-# Бот и диспетчер
+# 4) Инициализация бота и диспетчера
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
-# Google Sheets
+# 5) Подключение к Google Sheets
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_name('google-credentials.json', scope)
 gc = gspread.authorize(creds)
 sheet = gc.open_by_key(GSHEET_KEY).worksheet("Заказы_бота")
 gpt_log_sheet = gc.open_by_key(GSHEET_KEY).worksheet("GPT_лог")
 
-# FSM для заявки
+# 6) FSM для заявки
 class Form(StatesGroup):
     name = State()
     service = State()
     comment = State()
 
-# FSM для GPT
+# 7) FSM для GPT
 class GPTState(StatesGroup):
     question = State()
 
-# Клавиатуры
+# 8) Клавиатуры
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add("📦 Оставить заявку", "📜 История заказов", "🧠 Консультация")
 back_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 back_kb.add("◀️ Назад")
 
-# /start
+# 9) /start
 @dp.message_handler(commands='start')
 async def start(message: types.Message):
     await message.answer("Добро пожаловать в STEP_3D!", reply_markup=main_kb)
@@ -90,11 +93,19 @@ async def fsm_comment(message: types.Message, state: FSMContext):
     data = await state.get_data()
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     order_id = len(sheet.get_all_values())
-    sheet.append_row([order_id, message.from_user.id, data['name'], data['service'], message.text, "новый", now])
+    sheet.append_row([
+        order_id,
+        message.from_user.id,
+        data['name'],
+        data['service'],
+        message.text,
+        "новый",
+        now
+    ])
     await message.answer(f"✅ Заказ №{order_id} сохранён", reply_markup=main_kb)
     await state.finish()
 
-# — Пагинация истории заказов —
+# — История заказов с пагинацией —
 @dp.message_handler(lambda m: m.text == "📜 История заказов")
 async def show_history_start(message: types.Message):
     await send_order_page(message, page=0)
@@ -165,6 +176,7 @@ async def gpt_answer(message: types.Message, state: FSMContext):
         await state.finish()
         await message.answer("Главное меню", reply_markup=main_kb)
         return
+
     await message.answer("🤖 Думаю над ответом...")
     try:
         response = openai.ChatCompletion.create(
@@ -175,10 +187,10 @@ async def gpt_answer(message: types.Message, state: FSMContext):
             ]
         )
         reply = response['choices'][0]['message']['content']
-        # Здесь строка закрыта правильно:
+        # Правильно закрытая f-строка:
         await message.answer(f"🧠 Ответ GPT:\n{reply}", reply_markup=main_kb)
 
-        # Логирование
+        # Логирование в Google Sheets
         row_id = len(gpt_log_sheet.get_all_values())
         gpt_log_sheet.append_row([
             row_id,
@@ -194,6 +206,11 @@ async def gpt_answer(message: types.Message, state: FSMContext):
     finally:
         await state.finish()
 
+# 10) Эхо‑хэндлер для отладки входящих сообщений
+@dp.message_handler()
+async def echo(message: types.Message):
+    await message.answer(f"✅ Получил: {message.text}")
+
 if __name__ == "__main__":
-    logging.info("🚀 Бот запущен!")
+    logging.info("🚀 Полный бот запущен!")
     executor.start_polling(dp, skip_updates=True)
