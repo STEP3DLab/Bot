@@ -105,7 +105,7 @@ async def gpt_answer(message: types.Message, state: FSMContext):
             ]
         )
         reply = response['choices'][0]['message']['content']
-        await message.answer(f"🧠 Ответ GPT:
+        await message.answer(f"🧠 Ответ GPT:\n{reply}", reply_markup=main_kb)
 {reply}", reply_markup=main_kb)
         row_id = len(gpt_log_sheet.get_all_values())
         gpt_log_sheet.append_row([
