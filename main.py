@@ -2,10 +2,13 @@
 
 import logging
 import json
+import os
+from dotenv import load_dotenv
 
-# --- CONFIG ---
-API_TOKEN = 'TELEGRAM_BOT_API_TOKEN'
-OPENAI_API_KEY = 'OPENAI_API_KEY'
+# --- LOAD ENV ---
+load_dotenv()
+API_TOKEN = os.getenv('API_TOKEN')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 # --- MOCK DEPENDENCY (OpenAI not available in some environments) ---
 class MockOpenAI:
