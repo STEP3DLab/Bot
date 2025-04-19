@@ -1,78 +1,62 @@
 
+import os
+import logging
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.utils import executor
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-import os
+from aiogram.dispatcher.filters import Text
+import openai
+
 from dotenv import load_dotenv
 load_dotenv()
 
 API_TOKEN = os.getenv("API_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai.api_key = OPENAI_API_KEY
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
+logging.basicConfig(level=logging.INFO)
 
+# FSM для заявки
 class Form(StatesGroup):
     name = State()
     email = State()
     phone = State()
     service = State()
 
+# Главное меню
 start_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-start_kb.add(KeyboardButton("📝 Оставить заявку"), KeyboardButton("👀 Посмотреть 3D-модели"))
+start_kb.add(
+    KeyboardButton("📝 Оставить заявку"),
+    KeyboardButton("🧠 Консультация")
+)
 
 @dp.message_handler(commands='start')
 async def cmd_start(message: types.Message):
-    await message.answer("Добро пожаловать в STEP_3D!\nВыберите действие:", reply_markup=start_kb)
+    await message.answer("Добро пожаловать в STEP_3D! Выберите действие:", reply_markup=start_kb)
 
-@dp.message_handler(lambda message: message.text == "📝 Оставить заявку")
-async def start_form(message: types.Message):
-    await Form.name.set()
-    await message.answer("Введите ваше имя:", reply_markup=ReplyKeyboardRemove())
+@dp.message_handler(Text(equals="🧠 Консультация"))
+async def gpt_intro(message: types.Message):
+    await message.answer("🧠 Задайте вопрос об услугах 3D-печати, сканирования или AR/VR:")
 
-@dp.message_handler(state=Form.name)
-async def process_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await Form.next()
-    await message.answer("Введите email:")
-
-@dp.message_handler(state=Form.email)
-async def process_email(message: types.Message, state: FSMContext):
-    if "@" not in message.text:
-        return await message.answer("Неверный формат email. Попробуйте ещё раз.")
-    await state.update_data(email=message.text)
-    await Form.next()
-    await message.answer("Введите номер телефона:")
-
-@dp.message_handler(state=Form.phone)
-async def process_phone(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
-        return await message.answer("Телефон должен содержать только цифры.")
-    await state.update_data(phone=message.text)
-    await Form.next()
-    markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("3D-печать", "3D-сканирование", "AR/VR")
-    await message.answer("Выберите тип услуги:", reply_markup=markup)
-
-@dp.message_handler(state=Form.service)
-async def process_service(message: types.Message, state: FSMContext):
-    await state.update_data(service=message.text)
-    data = await state.get_data()
-
-    # Сохраняем в Google Таблицу
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    creds = ServiceAccountCredentials.from_json_keyfile_name('google-credentials.json', scope)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/1dMgnIpCPWbJkA-FyoUOMtZ5YkSee3e7y-cu2-2PKlIo/edit").sheet1
-    row = [data['name'], data['email'], data['phone'], data['service']]
-    sheet.append_row(row)
-
-    await message.answer("✅ Спасибо! Ваша заявка принята.", reply_markup=start_kb)
-    await state.finish()
+@dp.message_handler(lambda msg: msg.reply_to_message and 'Задайте вопрос' in msg.reply_to_message.text)
+async def gpt_answer(message: types.Message):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Ты — ассистент STEP_3D, объясняешь услуги 3D-печати, сканирования, моделирования, AR/VR простым языком."},
+                {"role": "user", "content": message.text}
+            ]
+        )
+        await message.answer(response['choices'][0]['message']['content'])
+    except Exception as e:
+        logging.exception(e)
+        await message.answer("⚠️ Произошла ошибка при обращении к ChatGPT.")
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
