@@ -46,6 +46,7 @@ back_kb.add("◀️ Назад")
 async def start(message: types.Message):
     await message.answer("Добро пожаловать в STEP_3D!", reply_markup=main_kb)
 
+# FSM форма заявки
 @dp.message_handler(lambda m: m.text == "📦 Оставить заявку")
 async def fsm_start(message: types.Message):
     await Form.name.set()
@@ -84,30 +85,54 @@ async def fsm_comment(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Заказ №{order_id} сохранён", reply_markup=main_kb)
     await state.finish()
 
+# История заказов с пагинацией
 @dp.message_handler(lambda m: m.text == "📜 История заказов")
-async def show_history(message: types.Message):
-    records = sheet.get_all_records()
-    user_id = message.from_user.id
-    found = False
-    for row in records:
-        if row['user_id'] == user_id or user_id in MANAGERS:
-            found = True
-            text_block = (
-                f"📦 Заказ №{row['№']}\n"
-                f"Услуга: {row['service']}\n"
-                f"Комментарий: {row['comment']}\n"
-                f"Статус: {row['статус']}\n"
-                f"Дата: {row['дата']}"
-            )
-            kb = InlineKeyboardMarkup()
-            kb.add(
-                InlineKeyboardButton("✅ Завершить", callback_data=f"done:{row['№']}"),
-                InlineKeyboardButton("🗑 Удалить", callback_data=f"del:{row['№']}")
-            )
-            await message.answer(text_block, reply_markup=kb)
-    if not found:
-        await message.answer("У вас пока нет заказов.")
+async def show_history_start(message: types.Message):
+    await send_order_page(message, page=0)
 
+async def send_order_page(message_or_call, page: int):
+    records = sheet.get_all_records()
+    user_id = message_or_call.from_user.id
+    user_records = [row for row in records if row['user_id'] == user_id or user_id in MANAGERS]
+
+    if not user_records:
+        await message_or_call.answer("У вас пока нет заказов.")
+        return
+
+    start = page * 3
+    end = start + 3
+    page_records = user_records[start:end]
+
+    for row in page_records:
+        text = (
+            f"📦 Заказ №{row['№']}\n"
+            f"Услуга: {row['service']}\n"
+            f"Комментарий: {row['comment']}\n"
+            f"Статус: {row['статус']}\n"
+            f"Дата: {row['дата']}"
+        )
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("✅ Завершить", callback_data=f"done:{row['№']}"),
+            InlineKeyboardButton("🗑 Удалить", callback_data=f"del:{row['№']}")
+        )
+        await message_or_call.answer(text, reply_markup=kb)
+
+    nav_kb = InlineKeyboardMarkup()
+    if start > 0:
+        nav_kb.insert(InlineKeyboardButton("◀️ Назад", callback_data=f"page:{page - 1}"))
+    if end < len(user_records):
+        nav_kb.insert(InlineKeyboardButton("▶️ Вперёд", callback_data=f"page:{page + 1}"))
+    if nav_kb.inline_keyboard:
+        await message_or_call.answer("Навигация:", reply_markup=nav_kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("page:"))
+async def paginate(callback_query: types.CallbackQuery):
+    page = int(callback_query.data.split(":")[1])
+    await callback_query.answer()
+    await send_order_page(callback_query.message, page)
+
+# Завершение / удаление заказа
 @dp.callback_query_handler(lambda c: c.data.startswith("done:") or c.data.startswith("del:"))
 async def process_action(callback_query: types.CallbackQuery):
     action, order_id = callback_query.data.split(":")
@@ -123,6 +148,7 @@ async def process_action(callback_query: types.CallbackQuery):
     else:
         await callback_query.message.answer("⚠️ Заказ не найден.")
 
+# Консультация через GPT
 @dp.message_handler(lambda m: m.text == "🧠 Консультация")
 async def gpt_start(message: types.Message):
     await GPTState.question.set()
