@@ -1,4 +1,3 @@
-
 import os
 import logging
 from datetime import datetime
@@ -12,33 +11,44 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import openai
 
+# Загрузка переменных окружения
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
 GSHEET_KEY = os.getenv("GOOGLE_SHEET_KEY")
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+
+# Менеджеры (Telegram IDs)
 MANAGERS = [123456789]
 
+# Инициализация бота и диспетчера
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
+# Подключение к Google Sheets
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_name('google-credentials.json', scope)
 gc = gspread.authorize(creds)
 sheet = gc.open_by_key(GSHEET_KEY).worksheet("Заказы_бота")
 gpt_log_sheet = gc.open_by_key(GSHEET_KEY).worksheet("GPT_лог")
 
+# FSM для заявки
 class Form(StatesGroup):
     name = State()
     service = State()
     comment = State()
 
+# FSM для GPT
 class GPTState(StatesGroup):
     question = State()
 
+# Основное меню
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add("📦 Оставить заявку", "📜 История заказов", "🧠 Консультация")
 
+# Кнопка «Назад»
 back_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 back_kb.add("◀️ Назад")
 
@@ -46,6 +56,7 @@ back_kb.add("◀️ Назад")
 async def start(message: types.Message):
     await message.answer("Добро пожаловать в STEP_3D!", reply_markup=main_kb)
 
+# — FSM заявки —
 @dp.message_handler(lambda m: m.text == "📦 Оставить заявку")
 async def fsm_start(message: types.Message):
     await Form.name.set()
@@ -84,6 +95,66 @@ async def fsm_comment(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Заказ №{order_id} сохранён", reply_markup=main_kb)
     await state.finish()
 
+# — Пагинация истории заказов —
+@dp.message_handler(lambda m: m.text == "📜 История заказов")
+async def show_history_start(message: types.Message):
+    await send_order_page(message, page=0)
+
+async def send_order_page(message_or_call, page: int):
+    records = sheet.get_all_records()
+    user_id = message_or_call.from_user.id
+    user_records = [r for r in records if r['user_id'] == user_id or user_id in MANAGERS]
+    if not user_records:
+        await message_or_call.answer("У вас пока нет заказов.")
+        return
+
+    per_page = 3
+    start, end = page * per_page, (page + 1) * per_page
+    for row in user_records[start:end]:
+        text = (
+            f"📦 Заказ №{row['№']}\n"
+            f"Услуга: {row['service']}\n"
+            f"Комментарий: {row['comment']}\n"
+            f"Статус: {row['статус']}\n"
+            f"Дата: {row['дата']}"
+        )
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("✅ Завершить", callback_data=f"done:{row['№']}"),
+            InlineKeyboardButton("🗑 Удалить", callback_data=f"del:{row['№']}")
+        )
+        await message_or_call.answer(text, reply_markup=kb)
+
+    nav = InlineKeyboardMarkup()
+    if start > 0:
+        nav.insert(InlineKeyboardButton("◀️ Назад", callback_data=f"page:{page-1}"))
+    if end < len(user_records):
+        nav.insert(InlineKeyboardButton("▶️ Вперёд", callback_data=f"page:{page+1}"))
+    if nav.inline_keyboard:
+        await message_or_call.answer("Навигация:", reply_markup=nav)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("page:"))
+async def paginate(callback_query: types.CallbackQuery):
+    page = int(callback_query.data.split(":")[1])
+    await callback_query.answer()
+    await send_order_page(callback_query.message, page)
+
+@dp.callback_query_handler(lambda c: c.data.startswith(("done:", "del:")))
+async def process_action(callback_query: types.CallbackQuery):
+    action, order_id = callback_query.data.split(":")
+    records = sheet.get_all_records()
+    idx = next((i+2 for i, r in enumerate(records) if str(r['№']) == order_id), None)
+    if not idx:
+        await callback_query.message.answer("⚠️ Заказ не найден.")
+        return
+    if action == "done":
+        sheet.update_cell(idx, 6, "завершён")
+        await callback_query.message.edit_text(f"✅ Заказ №{order_id} помечен как завершён")
+    else:
+        sheet.delete_row(idx)
+        await callback_query.message.edit_text(f"🗑 Заказ №{order_id} удалён")
+
+# — GPT-консультация и логирование —
 @dp.message_handler(lambda m: m.text == "🧠 Консультация")
 async def gpt_start(message: types.Message):
     await GPTState.question.set()
@@ -100,13 +171,14 @@ async def gpt_answer(message: types.Message, state: FSMContext):
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "Ты — эксперт по 3D-печати и инженерии."},
+                {"role": "system", "content": "Ты — эксперт по 3D-печати и инженерии. Отвечай кратко и по делу."},
                 {"role": "user", "content": message.text}
             ]
         )
-        reply = response['choices'][0]['message']['content']
+        reply = response.choices[0].message.content
         await message.answer(f"🧠 Ответ GPT:\n{reply}", reply_markup=main_kb)
-#{reply}", reply_markup=main_kb)
+
+        # лог в Google Sheets
         row_id = len(gpt_log_sheet.get_all_values())
         gpt_log_sheet.append_row([
             row_id,
@@ -117,8 +189,8 @@ async def gpt_answer(message: types.Message, state: FSMContext):
             datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ])
     except Exception as e:
-        await message.answer("⚠️ Ошибка GPT.")
-        print(e)
+        logging.error(e)
+        await message.answer("⚠️ Ошибка при запросе GPT.", reply_markup=main_kb)
     finally:
         await state.finish()
 
