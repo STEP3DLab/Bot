@@ -2,107 +2,61 @@ import logging
 import os
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-import openai
+from datetime import datetime
 
-API_TOKEN = os.getenv("API_TOKEN", "your-telegram-token")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your-openai-key")
-openai.api_key = OPENAI_API_KEY
-
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
+
+# Получение токенов из переменных окружения
+API_TOKEN = os.getenv("API_TOKEN")
+if not API_TOKEN:
+    raise ValueError("API_TOKEN is missing in environment variables")
+
+# Инициализация бота и диспетчера
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
-orders_db = {
-    "3121": {
-        "client": "Иванов И.И.",
-        "service": "3D-печать (PLA)",
-        "status": "Завершён",
-        "date": "2025-04-15",
-        "deadline": "2025-04-20",
-        "feedback": "Очень качественно и быстро!"
-    },
-    "3122": {
-        "client": "Петров С.С.",
-        "service": "3D-сканирование",
-        "status": "В работе",
-        "date": "2025-04-19",
-        "deadline": "2025-04-25",
-        "feedback": ""
-    }
-}
+# Клавиатура
+kb = ReplyKeyboardMarkup(resize_keyboard=True)
+kb.add(KeyboardButton("Просмотр 3D-моделей"), KeyboardButton("Оценить 3D-услугу"))
 
-main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-main_kb.add("/статус", "/отзыв").add("/написать_отзыв", "🧠 Помощь")
-
-@dp.message_handler(commands=['start'])
-async def cmd_start(message: types.Message):
-    await message.reply("👋 Привет! Я бот STEP_3D. Выберите команду:", reply_markup=main_kb)
-
-@dp.message_handler(commands=['статус'])
-async def get_status(message: types.Message):
-    await message.reply("Введите ID заказа, например: 3121")
-
-@dp.message_handler(commands=['отзыв'])
-async def get_feedback_command(message: types.Message):
-    await message.reply("Введите ID заказа для отзыва, например: /отзыв 3121")
-
-@dp.message_handler(commands=['написать_отзыв'])
-async def write_feedback(message: types.Message):
-    await message.reply("✍ Введите в формате: 3121: Очень понравилось!")
-
-@dp.message_handler(lambda m: ':' in m.text and m.text.split(':')[0].strip().isdigit())
-async def save_feedback(message: types.Message):
-    order_id, feedback = message.text.split(':', 1)
-    if order_id in orders_db:
-        orders_db[order_id]["feedback"] = feedback.strip()
-        await message.reply("✅ Спасибо! Отзыв сохранён.")
-    else:
-        await message.reply("❗ Неверный ID заказа.")
-
-@dp.message_handler(lambda m: m.text.startswith("/отзыв"))
-async def get_feedback(message: types.Message):
-    try:
-        _, order_id = message.text.strip().split()
-        order = orders_db.get(order_id)
-        if order and order["feedback"]:
-            await message.reply(f'🗣 Отзыв клиента: "{order["feedback"]}"')
-        else:
-            await message.reply("❗ Отзыв не найден.")
-    except:
-        await message.reply("❗ Используй: /отзыв <id>")
-
-@dp.message_handler(lambda m: m.text.isdigit() and m.text in orders_db)
-async def send_status_by_id(message: types.Message):
-    order_id = message.text
-    order = orders_db[order_id]
-    await message.reply(
-        f"📦 Заказ №{order_id}
-"
-        f"Клиент: {order['client']}
-"
-        f"Услуга: {order['service']}
-"
-        f"Статус: {order['status']}
-"
-        f"Дата: {order['date']}
-"
-        f"📅 Срок: до {order['deadline']}"
+# Хэндлер запуска
+@dp.message_handler(commands=["start"])
+async def send_welcome(message: types.Message):
+    await message.answer(
+        "Здравствуйте! Я @STEP3D_AI_Bot.\n"
+        "Я могу помочь оценить стоимость и сроки 3D-услуг, а также просмотреть 3D-модели.\n"
+        "Выберите действие с помощью кнопок ниже.",
+        reply_markup=kb
     )
 
-@dp.message_handler(content_types=['document'])
-async def handle_document(message: types.Message):
-    await message.reply("📥 Файл получен. Спасибо! Обработка начнётся скоро.")
+# Хэндлер кнопки "Просмотр 3D-моделей"
+@dp.message_handler(lambda message: message.text == "Просмотр 3D-моделей")
+async def handle_view_models(message: types.Message):
+    await message.answer("Отправьте вашу 3D-модель в формате .stl, и я сгенерирую ссылку для просмотра.")
 
-@dp.message_handler(lambda m: m.text == "🧠 Помощь")
-async def gpt_help(message: types.Message):
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "Ты бот STEP_3D, консультируешь по 3D-услугам."},
-            {"role": "user", "content": message.text}
-        ]
+# Хэндлер кнопки "Оценить 3D-услугу"
+@dp.message_handler(lambda message: message.text == "Оценить 3D-услугу")
+async def handle_service_estimate(message: types.Message):
+    await message.answer("Опишите требования для 3D-услуги, и я помогу оценить её стоимость.")
+
+# Хэндлер загрузки модели
+@dp.message_handler(content_types=types.ContentType.DOCUMENT)
+async def handle_model_upload(message: types.Message):
+    doc = message.document
+    file_id = doc.file_id
+    file_name = doc.file_name
+    order_id = datetime.now().strftime("%H%M%S")
+    price = 3500
+    deadline = 2
+
+    response = (
+        f"📦 Заказ №{order_id}\n"
+        f"🧾 Файл: {file_name}\n"
+        f"💰 Цена: {price} ₽\n"
+        f"⏳ Срок: {deadline} дня"
     )
-    await message.reply(response['choices'][0]['message']['content'])
+    await message.answer(response)
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
