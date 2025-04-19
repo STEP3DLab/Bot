@@ -18,10 +18,8 @@ API_TOKEN = os.getenv("API_TOKEN")
 GSHEET_KEY = os.getenv("GOOGLE_SHEET_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# OpenAI Client
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Telegram ID менеджеров
 MANAGERS = [123456789]
 
 class IsAdminFilter(BoundFilter):
@@ -35,7 +33,7 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 dp.filters_factory.bind(IsAdminFilter)
 
-# Google Sheets подключение
+# Google Sheets
 try:
     scope = ['https://spreadsheets.google.com/feeds','https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_name('google-credentials.json', scope)
@@ -49,6 +47,11 @@ except Exception as e:
 class GPTState(StatesGroup):
     question = State()
 
+class FormState(StatesGroup):
+    name = State()
+    service = State()
+    comment = State()
+
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True).add(
     "📦 Оставить заявку", "📜 История заказов", "🧠 Консультация"
 )
@@ -58,6 +61,50 @@ back_kb = ReplyKeyboardMarkup(resize_keyboard=True).add("◀️ Назад")
 async def cmd_start(msg: types.Message):
     await msg.answer("Добро пожаловать в STEP_3D!", reply_markup=main_kb)
 
+# 📦 FSM: Оставить заявку
+@dp.message_handler(lambda m: m.text == "📦 Оставить заявку")
+async def form_start(msg: types.Message):
+    await FormState.name.set()
+    await msg.answer("Введите ваше имя:", reply_markup=back_kb)
+
+@dp.message_handler(state=FormState.name)
+async def form_name(msg: types.Message, state: FSMContext):
+    if msg.text == "◀️ Назад":
+        await state.finish()
+        return await msg.answer("Главное меню", reply_markup=main_kb)
+    await state.update_data(name=msg.text)
+    await FormState.next()
+    await msg.answer("Какую услугу вы хотите заказать?", reply_markup=back_kb)
+
+@dp.message_handler(state=FormState.service)
+async def form_service(msg: types.Message, state: FSMContext):
+    if msg.text == "◀️ Назад":
+        await FormState.name.set()
+        return await msg.answer("Введите ваше имя:", reply_markup=back_kb)
+    await state.update_data(service=msg.text)
+    await FormState.next()
+    await msg.answer("Добавьте комментарий к заявке:", reply_markup=back_kb)
+
+@dp.message_handler(state=FormState.comment)
+async def form_comment(msg: types.Message, state: FSMContext):
+    if msg.text == "◀️ Назад":
+        await FormState.service.set()
+        return await msg.answer("Какую услугу вы хотите заказать?", reply_markup=back_kb)
+    data = await state.get_data()
+    try:
+        now = datetime.now().strftime('%Y-%m-%d %H:%M')
+        idx = len(sheet.get_all_values())
+        sheet.append_row([
+            idx, msg.from_user.id,
+            data['name'], data['service'],
+            msg.text, "новый", now
+        ])
+        await msg.answer("✅ Ваша заявка отправлена!", reply_markup=main_kb)
+    except Exception as e:
+        await msg.answer(f"⚠️ Ошибка при сохранении: {e}")
+    await state.finish()
+
+# 🧠 GPT
 @dp.message_handler(lambda m: m.text == "🧠 Консультация")
 async def gpt_start(msg: types.Message):
     await GPTState.question.set()
@@ -68,7 +115,6 @@ async def gpt_answer(msg: types.Message, state: FSMContext):
     if msg.text == "◀️ Назад":
         await state.finish()
         return await msg.answer("Главное меню", reply_markup=main_kb)
-
     await msg.answer("🤖 Думаю...")
     try:
         response = client.chat.completions.create(
@@ -81,7 +127,6 @@ async def gpt_answer(msg: types.Message, state: FSMContext):
         answer = response.choices[0].message.content
         await msg.answer(f"🧠 Ответ:
 {answer}", reply_markup=main_kb)
-
         if log_sheet:
             row_id = len(log_sheet.get_all_values())
             log_sheet.append_row([
